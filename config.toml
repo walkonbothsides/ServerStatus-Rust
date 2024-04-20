@@ -4,7 +4,13 @@ http_addr = "0.0.0.0:8080"
 # 默认30s无上报判定下线
 offline_threshold = 30
 
+# 开启 grpc TLS, 0:关闭 1: TLS 2: mTLS
+grpc_tls = 0
+# 证书最终路径 ${workspace}/${tls_dir}, 包含 server.pem, server.key 文件
+tls_dir = "tls"
+
 # 管理员账号,不设置默认随机生成，用于查看 /detail, /map
+jwt_secret = "" # 修改这个, 使用 openssl rand -base64 16 生成 secret
 admin_user = ""
 admin_pass = ""
 
@@ -17,16 +23,23 @@ admin_pass = ""
 # 或国家缩写，如 cn us 等等，所有国家见目录 web/static/flags
 # 自定义标签 labels = "os=centos;ndd=2022/11/25;spec=2C/4G/60G;"
 # os 标签可选，不填则使用上报数据，ndd(next due date) 下次续费时间, spec 为主机规格
-# os 可用值 centos debian ubuntu alpine pi arch windows linux
+# os 可用值 centos debian ubuntu alpine pi arch windows linux macos android freebsd
 hosts = [
-  {name = "h1", password = "p1", alias = "n1", location = "🏠", type = "kvm", labels = "os=arch;ndd=2022/11/25;spec=2C/4G/60G;"},
+  {name = "h1", password = "p1", alias = "n1", location = "🏠", type = "kvm", labels = "os=freebsd;ndd=2022/11/25;spec=2C/4G/60G;"},
   {name = "h2", password = "p2", alias = "n2", location = "🏢", type = "kvm", disabled = false},
   {name = "h3", password = "p3", alias = "n3", location = "🏡", type = "kvm", monthstart = 1},
   {name = "h4", password = "p4", alias = "n4", location = "cn", type = "kvm", notify = true, labels = "ndd=2022/11/25;spec=2C/4G/60G;"},
+
+  # 最小化配置
+  {name = "mac", password = "pp", alias = "macos"},
+  {name = "pi", password = "pp", alias = "pi", labels = "os=pi"},
+  {name = "win", password = "pp", alias = "windows"},
+  {name = "android", password = "pp", alias = "android", labels = "os=android"},
 ]
 
 # 动态注册模式，不再需要针对每一个主机做单独配置
 # gid 为模板组id, 自动注册唯一标识，不可重复
+# eg. ./stat_client -a "http://127.0.0.1:8080/report" -g g1 -p pp
 hosts_group = [
   # 可以按国家地区或用途来做分组
   {gid = "g1", password = "pp", location = "🏠", type = "kvm", labels = "os=centos;ndd=2022/11/25;spec=2C/4G/60G;"},
@@ -35,6 +48,7 @@ hosts_group = [
   {gid = "silent", password = "pp", location = "🏡", type = "kvm", notify = false},
 ]
 # 动态注册模式下，无效数据清理间隔，默认 30s
+# 这个设置要比较通知间隔 notify_interval 大，不然收不到告警通知
 group_gc = 30
 
 # !!! 一键部署如果没问题则不需要动，Server 会自行根据你的域名生成 server_url

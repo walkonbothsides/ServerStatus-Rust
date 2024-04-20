@@ -12,19 +12,17 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{System, SystemExt};
 use tokio::time;
 
 use stat_common::server_status::{IpInfo, StatRequest, SysInfo};
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, GenericError>;
+mod geoip;
 mod grpc;
-mod ip_api;
 mod status;
 mod sys_info;
 mod vnstat;
 
-const INTERVAL_MS: u64 = 1000;
 static CU: &str = "cu.tz.cloudcpp.com:80";
 static CT: &str = "ct.tz.cloudcpp.com:80";
 static CM: &str = "cm.tz.cloudcpp.com:80";
@@ -57,6 +55,13 @@ pub struct Args {
     )]
     vnstat_mr: u32,
     #[arg(
+        long = "interval",
+        env = "SSR_INTERVAL",
+        default_value_t = 1,
+        help = "data report interval (s)"
+    )]
+    report_interval: u64,
+    #[arg(
         long = "disable-tupd",
         env = "SSR_DISABLE_TUPD",
         help = "disable t/u/p/d, default:false"
@@ -80,8 +85,39 @@ pub struct Args {
     cm_addr: String,
     #[arg(long = "cu",  env = "SSR_CU_ADDR", default_value = CU, help = "China Unicom probe addr")]
     cu_addr: String,
+    #[arg(long = "sys-info", help = "show sys info, default:false")]
+    sys_info: bool,
     #[arg(long = "ip-info", help = "show ip info, default:false")]
     ip_info: bool,
+    #[arg(
+        long = "ip-source",
+        env = "SSR_IP_SOURCE",
+        default_value = "ip-api.com",
+        help = "ip info source"
+    )]
+    ip_source: String,
+    #[arg(
+        long = "ipv4-addr",
+        env = "SSR_IPV4_ADDR",
+        default_value = "ipv4.google.com:80",
+        help = "ipv4 check address"
+    )]
+    ipv4_address: String,
+    #[arg(
+        long = "ipv6-addr",
+        env = "SSR_IPV6_ADDR",
+        default_value = "ipv6.google.com:80",
+        help = "ipv6 check address"
+    )]
+    ipv6_address: String,
+    #[arg(
+        short = 'o',
+        long,
+        env = "SSR_ONLINE",
+        default_value = "0",
+        help = "online 1:ipv4, 2:ipv6, 3:both"
+    )]
+    online: u8,
     #[arg(long = "json", help = "use json protocol, default:false")]
     json: bool,
     #[arg(short = '6', long = "ipv6", help = "ipv6 only, default:false")]
@@ -106,6 +142,10 @@ pub struct Args {
     disable_notify: bool,
     #[arg(short = 't', long = "type", env = "SSR_TYPE", default_value = "", help = "host type")]
     host_type: String,
+    #[arg(long = "mtls", env = "SSR_MTLS", help = "enable mTLS, default:false")]
+    mtls: bool,
+    #[arg(long, env = "SSR_TLS_DIR", default_value = "tls", help = "tls certs dir")]
+    tls_dir: String,
     #[arg(long, env = "SSR_LOC", default_value = "", help = "location")]
     location: String,
     #[arg(short = 'd', long = "debug", env = "SSR_DEBUG", help = "debug mode, default:false")]
@@ -113,7 +153,6 @@ pub struct Args {
     #[arg(
         short = 'i',
         long = "iface",
-
         env = "SSR_IFACE",
         default_values_t = Vec::<String>::new(),
         value_delimiter = ',',
@@ -129,6 +168,10 @@ pub struct Args {
         help = "exclude iface"
     )]
     exclude_iface: Vec<String>,
+    #[arg(long, env = "SSR_PROXY", default_value = "", help = "proxy")]
+    proxy: String,
+    #[arg(long, env = "SSR_NO_PROXY", default_value = "", help = "no proxy, eg: ip-api.com")]
+    no_proxy: String,
 }
 
 impl Args {
@@ -150,7 +193,7 @@ fn sample_all(args: &Args, stat_base: &StatRequest) -> StatRequest {
     // dbg!(&stat_base);
     let mut stat_rt = stat_base.clone();
 
-    #[cfg(all(feature = "native", not(feature = "sysinfo")))]
+    #[cfg(all(feature = "native", not(feature = "sysinfo"), target_os = "linux"))]
     status::sample(args, &mut stat_rt);
     #[cfg(all(feature = "sysinfo", not(feature = "native")))]
     sys_info::sample(args, &mut stat_rt);
@@ -175,9 +218,9 @@ fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
     let mut domain = args.addr.split('/').collect::<Vec<&str>>()[2].to_owned();
     if !domain.contains(':') {
         if args.addr.contains("https") {
-            domain = format!("{}:443", domain);
+            domain = format!("{domain}:443");
         } else {
-            domain = format!("{}:80", domain);
+            domain = format!("{domain}:80");
         }
     }
     let tcp_addr = domain.to_socket_addrs()?.next().unwrap();
@@ -189,11 +232,21 @@ fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
         stat_base.online6 = ipv6;
     }
 
-    let http_client = reqwest::Client::builder()
+    let mut http_client_builder = reqwest::Client::builder()
         .pool_max_idle_per_host(1)
         .connect_timeout(Duration::from_secs(5))
-        .user_agent(format!("{}/{}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION")))
-        .build()?;
+        .user_agent(format!("{}/{}", env!("CARGO_BIN_NAME"), env!("CARGO_PKG_VERSION")));
+
+    if !args.proxy.is_empty() {
+        let mut proxy = reqwest::Proxy::all(&args.proxy)?;
+        if !args.no_proxy.is_empty() {
+            proxy = proxy.no_proxy(reqwest::NoProxy::from_string(&args.no_proxy));
+        }
+
+        http_client_builder = http_client_builder.proxy(proxy);
+    }
+
+    let http_client = http_client_builder.build()?;
     loop {
         let stat_rt = sample_all(args, stat_base);
 
@@ -231,7 +284,7 @@ fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
                 .post(&url)
                 .basic_auth(auth_user, Some(auth_pass))
                 .timeout(Duration::from_secs(3))
-                .header(header::CONTENT_TYPE, content_type)
+                .header(header::CONTENT_TYPE.as_str(), content_type)
                 .header("ssr-auth", ssr_auth)
                 .body(body_data.unwrap())
                 .send()
@@ -246,7 +299,7 @@ fn http_report(args: &Args, stat_base: &mut StatRequest) -> Result<()> {
             }
         });
 
-        thread::sleep(Duration::from_millis(INTERVAL_MS));
+        thread::sleep(Duration::from_secs(args.report_interval));
     }
 }
 
@@ -255,7 +308,7 @@ async fn refresh_ip_info(args: &Args) {
     let mut interval = time::interval(time::Duration::from_secs(3600));
     loop {
         info!("get ip info from ip-api.com");
-        match ip_api::get_ip_info(args.ipv6).await {
+        match geoip::get_ip_info(args).await {
             Ok(ip_info) => {
                 info!("refresh_ip_info succ => {:?}", ip_info);
                 if let Ok(mut o) = G_CONFIG.lock() {
@@ -282,30 +335,35 @@ async fn main() -> Result<()> {
     }
 
     if args.ip_info {
-        let info = ip_api::get_ip_info(args.ipv6).await?;
+        let info = geoip::get_ip_info(&args).await?;
         dbg!(info);
         process::exit(0);
     }
 
     // support check
-    if !System::IS_SUPPORTED {
+    if !sysinfo::IS_SUPPORTED_SYSTEM {
         panic!("当前系统不支持，请切换到Python跨平台版本!");
     }
 
     let sys_info = sys_info::collect_sys_info(&args);
     let sys_info_json = serde_json::to_string(&sys_info)?;
     let sys_id = sys_info::gen_sys_id(&sys_info);
-    eprintln!("sys id: {}", sys_id);
-    eprintln!("sys info: {}", sys_info_json);
+    eprintln!("sys id: {sys_id}");
+    eprintln!("sys info: {sys_info_json}");
+
+    if args.sys_info {
+        sys_info::print_sysinfo();
+        process::exit(0);
+    }
 
     if let Ok(mut o) = G_CONFIG.lock() {
         o.sys_info = Some(sys_info);
     }
 
     // use native
-    #[cfg(all(feature = "native", not(feature = "sysinfo")))]
+    #[cfg(all(feature = "native", not(feature = "sysinfo"), target_os = "linux"))]
     {
-        eprintln!("enable feature native");
+        eprintln!("feature native enabled");
         status::start_cpu_percent_collect_t();
         status::start_net_speed_collect_t(&args);
     }
@@ -313,14 +371,14 @@ async fn main() -> Result<()> {
     // use sysinfo
     #[cfg(all(feature = "sysinfo", not(feature = "native")))]
     {
-        eprintln!("enable feature sysinfo");
+        eprintln!("feature sysinfo enabled");
         sys_info::start_cpu_percent_collect_t();
-        sys_info::start_net_speed_collect_t();
+        sys_info::start_net_speed_collect_t(&args);
     }
 
     status::start_all_ping_collect_t(&args);
-    let (ipv4, ipv6) = status::get_network();
-    eprintln!("get_network (ipv4, ipv6) => ({}, {})", ipv4, ipv6);
+    let (ipv4, ipv6) = status::get_network(&args);
+    eprintln!("get_network (ipv4, ipv6) => ({ipv4}, {ipv6})");
 
     if !args.disable_extra {
         // refresh ip info
@@ -365,7 +423,7 @@ async fn main() -> Result<()> {
         let result = http_report(&args, &mut stat_base);
         dbg!(&result);
     } else if args.addr.starts_with("grpc") {
-        let result = grpc::report(&args, &mut stat_base).await;
+        let result = { grpc::report(&args, &mut stat_base).await };
         dbg!(&result);
     } else {
         eprint!("invalid addr scheme!");

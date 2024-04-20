@@ -66,9 +66,10 @@ def get_hdd():
     return int(size / 1024.0 / 1024.0), int(used / 1024.0 / 1024.0)
 
 
-def get_cpu():
+def get_cpu(options):
     # blocking
-    return psutil.cpu_percent(interval=INTERVAL)
+    # return psutil.cpu_percent(interval=INTERVAL)
+    return psutil.cpu_percent(interval=int(options.interval))
 
 
 def get_sys_traffic(options):
@@ -283,7 +284,7 @@ def byte_str(object):
 
 
 def sample(options, stat_base):
-    cpu_percent = int(get_cpu())
+    cpu_percent = int(get_cpu(options))
     uptime = get_uptime()
     load_1, load_5, load_15 = os.getloadavg(
     ) if 'linux' in sys.platform else (0.0, 0.0, 0.0)
@@ -425,6 +426,7 @@ def refresh_ip_info():
                 "asname": resp.get("asname", "unknown"),
                 "lat": resp.get("lat", 0),
                 "lon": resp.get("lon", 0),
+                "timezone": resp.get("timezone", "Asia/Shanghai"),
             }
             # print(json.dumps(ip_info, indent=2))
             global G_IP_INFO
@@ -460,6 +462,14 @@ def get_sys_info(options):
 
 
 def gen_sys_id(sys_info):
+    """"""
+    SYS_ID_FILE = ".server_status_sys_id"
+    if os.path.exists(SYS_ID_FILE):
+        with open(SYS_ID_FILE, 'r') as f:
+            sys_id = f.read()
+            print(f"read sys_id from {SYS_ID_FILE}")
+            return sys_id.strip()
+
     s = "{}/{}/{}/{}/{}/{}/{}/{}".format(
         sys_info.get("host_name", "unknown"),
         sys_info.get("os_name", "unknown"),
@@ -470,7 +480,11 @@ def gen_sys_id(sys_info):
         sys_info.get("cpu_brand", "unknown"),
         psutil.boot_time(),
     )
-    return hashlib.md5(s.encode("utf-8")).hexdigest()
+    sys_id = hashlib.md5(s.encode("utf-8")).hexdigest()
+    with open(SYS_ID_FILE, "w") as wf:
+        wf.write(sys_id)
+        print(f"save sys_id to {SYS_ID_FILE} succ")
+    return sys_id
 
 
 def skip_iface(name, options):
@@ -528,6 +542,8 @@ def main():
     parser.add_option("-e", "--exclude-iface", dest="exclude_iface",
                       default="lo,docker,vnet,veth,vmbr,kube,br-",
                       help="exclude iface [default: %default]")
+    parser.add_option("--interval", dest="interval",
+                      default=1, help="report interval [default: %default]")
 
     (options, args) = parser.parse_args()
 

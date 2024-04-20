@@ -26,12 +26,14 @@ jobs:
             target: x86_64-unknown-linux-musl
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
           profile: minimal
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy
       - name: Build
         run: cargo build
       - name: Run tests

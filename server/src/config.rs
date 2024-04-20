@@ -1,6 +1,7 @@
 #![deny(warnings)]
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -20,6 +21,9 @@ fn default_http_addr() -> String {
 fn default_workspace() -> String {
     "/opt/ServerStatus".to_string()
 }
+fn default_tls_dir() -> String {
+    "tls".to_string()
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Host {
@@ -27,7 +31,9 @@ pub struct Host {
     pub password: String,
     #[serde(default = "Default::default")]
     pub alias: String,
+    #[serde(default = "Default::default")]
     pub location: String,
+    #[serde(default = "Default::default")]
     pub r#type: String,
     #[serde(default = "u32::default")]
     pub monthstart: u32,
@@ -58,7 +64,9 @@ pub struct Host {
 pub struct HostGroup {
     pub gid: String,
     pub password: String,
+    #[serde(default = "Default::default")]
     pub location: String,
+    #[serde(default = "Default::default")]
     pub r#type: String,
     #[serde(default = "default_as_true")]
     pub notify: bool,
@@ -99,9 +107,14 @@ pub struct Config {
     pub notify_interval: u64,
     #[serde(default = "Default::default")]
     pub offline_threshold: u64,
+    #[serde(default = "Default::default")]
+    pub grpc_tls: u32,
+    #[serde(default = "default_tls_dir")]
+    pub tls_dir: String,
     // admin user & pass
     pub admin_user: Option<String>,
     pub admin_pass: Option<String>,
+    pub jwt_secret: Option<String>,
 
     #[serde(default = "Default::default")]
     pub tgbot: notifier::tgbot::Config,
@@ -153,9 +166,14 @@ impl Config {
         }
         false
     }
-    pub fn to_string(&self) -> Result<String> {
-        serde_json::to_string(&self).map_err(anyhow::Error::new)
+
+    pub fn to_json_value(&self) -> Result<Value> {
+        serde_json::to_value(self).map_err(anyhow::Error::new)
     }
+
+    // pub fn to_string(&self) -> Result<String> {
+    //     serde_json::to_string(&self).map_err(anyhow::Error::new)
+    // }
 }
 
 pub fn from_str(content: &str) -> Option<Config> {
@@ -195,6 +213,9 @@ pub fn from_str(content: &str) -> Option<Config> {
     }
     if o.admin_pass.is_none() || o.admin_pass.as_ref()?.is_empty() {
         o.admin_pass = Some(Uuid::new_v4().to_string());
+    }
+    if o.jwt_secret.is_none() || o.jwt_secret.as_ref()?.is_empty() {
+        o.jwt_secret = Some(Uuid::new_v4().to_string());
     }
 
     eprintln!("✨ admin_user: {}", o.admin_user.as_ref()?);
